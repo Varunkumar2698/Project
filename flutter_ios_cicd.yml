@@ -1,0 +1,177 @@
+trigger:
+- none
+
+resources:
+# - repo: self
+
+  repositories:
+    - repository: Aurora.CoreToolKit
+      type: git
+      name: Aurora/Aurora.CoreToolKit
+      ref: refs/heads/sonar-analysis
+pool:
+  vmImage: 'macOS-15'
+
+variables:
+  flutterVersion: '3.29.2'
+  iosScheme: 'Runner'
+  buildConfiguration: 'Release'
+  FLUTTER_XCODE_CODE_SIGN_IDENTITY: ""
+  FLUTTER_XCODE_CODE_SIGNING_REQUIRED: NO 
+  dockerRegistryServiceConnection: "aurora_containerRegistry_serviceconnection"
+  imageRepository: 'aurorapatientFE'
+  projectKey: 'casoftwaredevelopment-mcare21_Aurora_Aurora.PatientApp.iOS'
+  ProjectName: 'Aurora.DoctorApp.iOS'
+  SDK: 'iphoneos'
+  projectbasefolder: .
+  scheme: 'Runner'
+  certificate: 'DoctorDistMy.p12'
+  profile: 'Dist_Doctor_Profile_New.mobileprovision'
+  apnscertificate: 'DoctorAPNSMy.p12'
+  cndistcertname: 'iPhone Distribution: COLUMBIA ASIA HEALTHCARE SDN BHD (9MWS879H95)'
+  profileuuid: 'fa21d7c0-c2b2-4f49-a8e5-44b1758bdd93'
+  profilename: 'Dist_Doctor_Profile_New'
+  
+jobs:
+- job: ios_job
+  displayName: iOS Job
+  steps:
+  - checkout: self
+    fetchDepth: 0
+    
+  - task: DownloadSecureFile@1
+    name: downloadAPSCert
+    inputs:
+      secureFile: 'DoctorAPNSMy.p12'
+
+  # - task: InstallAppleCertificate@2
+  #   inputs:
+  #     certSecureFile: '$(apnscertificate)'
+  #     certPwd: '$(PASSWORD)'
+  #     keychain: 'temp'
+  #   displayName: 'Install APNS Certificate'
+
+  - script: |
+      echo "Installing APS cert into temporary keychain..."
+
+      KEYCHAIN_NAME=aps.keychain
+      KEYCHAIN_PASSWORD=temp123
+      P12_PATH="$(downloadAPSCert.secureFilePath)"
+      P12_PASSWORD=123456
+
+      security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+      security default-keychain -s "$KEYCHAIN_NAME"
+      security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_NAME"
+      security set-keychain-settings -lut 21600 "$KEYCHAIN_NAME"
+
+      security import "$P12_PATH" \
+        -k "$KEYCHAIN_NAME" \
+        -P "$P12_PASSWORD" \
+        -T /usr/bin/security \
+        -T /usr/bin/codesign
+
+      security find-certificate -c "Apple Push Services" "$KEYCHAIN_NAME" || echo "Cert installed (check CN manually)."
+    displayName: 'Install APS Certificate'
+
+
+  - task: InstallAppleCertificate@2
+    inputs:
+      certSecureFile: '$(certificate)'
+      certPwd: '$(PASSWORD)'
+      keychain: 'temp'
+    displayName: 'Install Apple Certificate'
+
+  - task: InstallAppleProvisioningProfile@1
+    inputs:
+      provProfileSecureFile: '$(profile)'
+    displayName: 'Install Apple Provisioning Profile'
+
+  - bash: |
+      security find-identity -v -p codesigning
+    displayName: Cert List
+
+
+  - task: FlutterInstall@0
+    displayName: Install Flutter
+    inputs:
+      channel: 'stable'
+      version: 'latest'
+
+  - script: |
+      flutter --version
+      flutter pub get
+    displayName: 'Install Dependencies'
+          
+  - task: FlutterCommand@0
+    displayName: "Flutter run build_runner"
+    inputs:
+      projectDirectory: '$(Build.SourcesDirectory)'
+      arguments: 'pub run build_runner build --delete-conflicting-outputs'
+
+  - script: |
+      sudo gem install cocoapods
+      rm -rf Podfile.lock
+      rm -rf Pods
+      rm -rf .symlinks
+      rm -rf Flutter/Flutter.framework
+      rm -rf Flutter/Flutter.podspec
+      pod deintegrate
+      pod setup
+      pod install --repo-update
+    workingDirectory: ./ios
+    displayName: 'pod install'
+
+  - task: FlutterBuild@0
+    inputs:
+      target: 'ios'
+      projectDirectory: '.'
+      entryPoint: 'lib/main.dart'
+      iosCodesign: false
+
+
+  - task: Xcode@5
+    displayName: "Code sign ipa for distribution"
+    inputs:
+      actions: 'archive'
+      sdk: 'iphoneos'
+      configuration: 'release'
+      scheme: 'Runner'
+      xcWorkspacePath: 'ios/Runner.xcworkspace'
+      signingOption: 'manual'
+      signingIdentity: '$(APPLE_CERTIFICATE_SIGNING_IDENTITY)'
+      provisioningProfileUuid: '$(APPLE_PROV_PROFILE_UUID)'
+      packageApp: true
+      workingDirectory: 'ios'
+      exportOptions: 'plist'
+      exportOptionsPlist: 'ios/ExportOptions.plist'
+      archivePath: 'output/iphoneos/release/Runner.xcarchive'
+      exportPath: 'output/iphoneos/release'
+      args: 'CODE_SIGNING_ALLOWED=No'
+
+  - task: Bash@3
+    displayName: 'Entitlements signing'
+    inputs:
+      targetType: 'inline'
+      script:
+        codesign --entitlements $(Build.SourcesDirectory)/ios/Runner/Runner.entitlements -f -s "$(APPLE_CERTIFICATE_SIGNING_IDENTITY)" /Users/runner/work/1/s/output/iphoneos/release/Runner.xcarchive/Products/Applications/Runner.app
+
+  - task: Bash@3
+    displayName: 'Xcode sign and export'
+    inputs:
+      targetType: 'inline'
+      script:
+        /usr/bin/xcodebuild -exportArchive -archivePath /Users/runner/work/1/s/output/iphoneos/release/Runner.xcarchive -exportPath /Users/runner/work/1/s/output/iphoneos/release -exportOptionsPlist /Users/runner/work/1/s/ios/ExportOptions.plist
+
+  - task: CopyFiles@2
+    displayName: 'Copy .ipa package'
+    inputs:
+      contents: '**/*.ipa'
+      targetFolder: '$(build.artifactStagingDirectory)'
+      OverWrite: true
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+      ArtifactName: 'ios'
+      publishLocation: 'Container'
+
