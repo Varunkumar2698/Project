@@ -1,0 +1,18 @@
+I have resolved this issue, if anyone is still facing this issue follow steps below:
+
+Firstly add your Runner.entitlements or Entitlements plist file in 'ios/Runner' folder
+
+Update project.pbxproj file for code signing to use entitlement file
+
+In cicd use xcode@5 task to archive without code signing, next manually code sign your Runner.app file
+
+After archiving (Runner.app) you need to sign this with an entitlement file by using codesign command
+
+Command:
+
+codesign --entitlements -f -s -v <path to archive file (Runner.app)>
+
+After codesign use xcodebuild archiveexport command for exporting your ipa file
+
+This worked for me,
+If you are facing any issues let me know
